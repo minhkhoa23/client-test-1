@@ -8,6 +8,7 @@
 #include <fstream>
 #include <cstring>
 #include <string>
+#include <sstream>
 #include <thread>
 #include <chrono>
 
@@ -34,14 +35,24 @@ void signalHandler(int signum) {
     running = false;
 }
 
+int DemSoFileTai(vector <string> inputFile, string filename) {
+    int count = 0;
+    for (int i = 0; i < inputFile.size(); i++) {
+        if (filename == inputFile[i]) {
+            count++;
+        }
+    }
+    return count;
+}
+
 // Hàm tải danh sách các file đã được download
-unordered_set<string> loadDownloadedFiles(const char* fileName) {
+vector<string> loadDownloadedFiles(const char* fileName) {
     ifstream file(fileName);
-    unordered_set<string> downloadedFiles;
+    vector<string> downloadedFiles;
     string line;
 
     while (getline(file, line)) {
-        downloadedFiles.insert(line);
+        downloadedFiles.push_back(line);
     }
 
     file.close();
@@ -61,30 +72,75 @@ void saveDownloadedFile(const char* fileName, const string& downloadedFile) {
 }
 
 // Hàm lấy danh sách các file mới cần download từ input.txt
-vector<string> getNewFilesToDownload(const char* inputFileName, const unordered_set<string>& downloadedFiles) {
+vector<string> getNewFilesToDownload(const char* inputFileName, const vector<string>& downloadedFiles) {
     ifstream file(inputFileName);
     vector<string> newFiles;
     string line;
+    int* a;
 
-    while (getline(file, line)) {
-        if (downloadedFiles.find(line) == downloadedFiles.end()) {
+    if (downloadedFiles.size() > 0) {
+        a = new int[downloadedFiles.size()]();
+        while (getline(file, line)) {
+            //if (downloadedFiles.find(line) == downloadedFiles.end()) {
+            //    newFiles.push_back(line);
+            //}
+            bool check = false;
+            for (int i = 0; i < downloadedFiles.size(); i++) {
+                if (a[i] == 0) {
+
+                    if (line == downloadedFiles[i]) {
+                        check = true;
+                        a[i] = 1;
+                        break;
+                    }
+                }
+            }
+
+            if (!check) {
+                newFiles.push_back(line);
+            }
+        }
+        delete[] a;
+    }
+    else {
+        while (getline(file, line)) {
+            //if (downloadedFiles.find(line) == downloadedFiles.end()) {
+            //    newFiles.push_back(line);
+            //}
             newFiles.push_back(line);
+
         }
     }
+
 
     file.close();
     return newFiles;
 }
-
 // Hàm download file từ server
-bool downloadFile(CSocket& serverSocket, const string& fileName) {
-    
+bool downloadFile(CSocket& serverSocket, const string& fileName, vector<string> downloadFiles) {
+
     char buffer[BUFFER_SIZE];
     memset(buffer, 0, BUFFER_SIZE);
     strcpy_s(buffer, fileName.c_str());
     serverSocket.Send(buffer, fileName.size());
 
-    ofstream outFile("output/" + fileName, ios::binary);
+    cout << "\r                                                                 ";
+    int count = DemSoFileTai(downloadFiles, fileName);
+    ofstream outFile;
+    if (count > 0) {
+        istringstream ss(fileName);
+        string token1;
+        getline(ss, token1, '.');
+        string token2;
+        getline(ss, token2, '\0');
+
+
+        outFile.open("output/" + token1 + "(" + to_string(count) + ")." + token2, ios::binary);
+    }
+    else {
+        outFile.open("output/" + fileName, ios::binary);
+    }
+
     if (!outFile.is_open()) {
         cerr << "Error creating file to save the download" << endl;
         return false;
@@ -93,20 +149,26 @@ bool downloadFile(CSocket& serverSocket, const string& fileName) {
     int bytesReceived;
     long long totalBytesReceived = 0;
     long long filesize;
+    char check[5];
+
+    serverSocket.Receive(check, 5);
+    if (string(check, 5) == "ERROR") {
+        cerr << "\rError: " << fileName << " not found on server" << endl;
+        outFile.close();
+        remove(("output/" + fileName).c_str());
+        saveDownloadedFile("downloaded_files.txt", fileName);
+        return false;
+    }
+
     serverSocket.Receive(&filesize, sizeof(filesize));
 
-    while ((bytesReceived = serverSocket.Receive(buffer, BUFFER_SIZE)) > 0) 
-    /*while (totalBytesReceived < filesize)*/{
-        if (string(buffer, bytesReceived) == "ERROR") {
-            cerr << "Error: File not found on server" << endl;
-            outFile.close();
-            remove(("output/" + fileName).c_str());
-            return false;
-        }
+    while ((bytesReceived = serverSocket.Receive(buffer, BUFFER_SIZE)) > 0)
+        /*while (totalBytesReceived < filesize)*/ {
         outFile.write(buffer, bytesReceived);
         totalBytesReceived += bytesReceived;
         cout << "\rDownloading " << fileName << " .... " << (totalBytesReceived * 100) / filesize << " %";
         memset(buffer, 0, BUFFER_SIZE); // Làm sạch buffer sau khi nhận dữ liệu
+
         if (totalBytesReceived == filesize) {
             break;
         }
@@ -140,7 +202,7 @@ int _tmain(int argc, TCHAR* argv[], TCHAR* envp[]) {
             return 1;
         }
 
-        if (clientSocket.Connect(_T("192.168.31.215"), 1234) != 0) {
+        if (clientSocket.Connect(_T("172.29.87.137"), 1234) != 0) {
             cout << "Ket noi toi server thanh cong !!" << endl << endl;
 
             char buffer[BUFFER_SIZE];
@@ -150,7 +212,7 @@ int _tmain(int argc, TCHAR* argv[], TCHAR* envp[]) {
             cout << "Available files from server: \n" << buffer << endl;
 
 
-            unordered_set<string> downloadedFiles = loadDownloadedFiles("downloaded_files.txt");
+            vector <string> downloadedFiles = loadDownloadedFiles("downloaded_files.txt");
 
             while (running) {
                 // Lấy danh sách các file cần download
@@ -158,18 +220,20 @@ int _tmain(int argc, TCHAR* argv[], TCHAR* envp[]) {
 
                 // Download từng file mới
                 for (const auto& filename : newFilesToDownload) {
-                    if (downloadFile(clientSocket, filename)) {
-                        downloadedFiles.insert(filename);  // Cập nhật danh sách các file đã download
+                    if (downloadFile(clientSocket, filename, downloadedFiles)) {
+                        downloadedFiles.push_back(filename);  // Cập nhật danh sách các file đã download
                     }
                     else {
                         cerr << "Failed to download file: " << filename << endl;
+                        downloadedFiles.push_back(filename);
                     }
                 }
 
                 // Kiểm tra xem còn file nào mới cần download không
                 newFilesToDownload = getNewFilesToDownload("input.txt", downloadedFiles);
+
                 if (newFilesToDownload.empty()) {
-                    cout << "No new files to download. Waiting for new entries in input.txt..." << endl;
+                    cout << "\rNo new files to download. Waiting for new entries in input.txt...";
                     this_thread::sleep_for(chrono::seconds(2)); // Thêm thời gian chờ ngắn trước khi quét lại
                 }
             }
